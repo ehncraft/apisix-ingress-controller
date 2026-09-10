@@ -75,6 +75,9 @@ func (r *HTTPRouteReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&discoveryv1.EndpointSlice{},
 			handler.EnqueueRequestsFromMapFunc(r.listHTTPRoutesByServiceRef),
 		).
+		Watches(&corev1.Service{},
+			handler.EnqueueRequestsFromMapFunc(r.listHTTPRoutesByServiceChange),
+		).
 		Watches(&v1alpha1.PluginConfig{},
 			handler.EnqueueRequestsFromMapFunc(r.listHTTPRoutesByExtensionRef),
 		).
@@ -274,6 +277,23 @@ func (r *HTTPRouteReconciler) listHTTPRoutesByServiceRef(ctx context.Context, ob
 	namespace := endpointSlice.GetNamespace()
 	serviceName := endpointSlice.Labels[discoveryv1.LabelServiceName]
 
+	return r.listHTTPRoutesByServiceNamespacedName(ctx, namespace, serviceName)
+}
+
+// listHTTPRoutesByServiceChange re-enqueues any HTTPRoute referencing this Service. Without
+// this, an HTTPRoute whose first reconcile fails to resolve its Service (e.g. the Service isn't
+// yet visible to the reconciler's cache) never gets another chance: the EndpointSlice watch
+// above only fires on EndpointSlice content changes, not on the Service becoming resolvable.
+func (r *HTTPRouteReconciler) listHTTPRoutesByServiceChange(ctx context.Context, obj client.Object) []reconcile.Request {
+	service, ok := obj.(*corev1.Service)
+	if !ok {
+		r.Log.Error(fmt.Errorf("unexpected object type"), "failed to convert object to Service")
+		return nil
+	}
+	return r.listHTTPRoutesByServiceNamespacedName(ctx, service.GetNamespace(), service.GetName())
+}
+
+func (r *HTTPRouteReconciler) listHTTPRoutesByServiceNamespacedName(ctx context.Context, namespace, serviceName string) []reconcile.Request {
 	hrList := &gatewayv1.HTTPRouteList{}
 	if err := r.List(ctx, hrList, client.MatchingFields{
 		indexer.ServiceIndexRef: indexer.GenIndexKey(namespace, serviceName),
